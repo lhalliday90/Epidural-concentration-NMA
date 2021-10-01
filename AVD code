@@ -1,0 +1,122 @@
+###############################################################################################################
+R-script for Network Meta-analysis Epidural LA concentration
+
+Date: 2021-01-10
+Version: 1. 0. 0
+Author: Dr Lucy Halliday <lucy.halliday@glasgow.ac.uk>
+Copywrite (C) 2021
+
+###############################################################################################################
+
+#load packs for xcel inport and for meta analysis  
+
+library(meta) 
+library(readxl) 
+library(tidyverse) 
+library(multinma)
+options(mc.cores = parallel::detectCores())
+
+
+meta_analysis <- read_excel("~/Desktop/DataForWrangling.xlsx") 
+head(meta_analysis) 
+
+#filter and only include rows with totals
+AVD_studies <- meta_analysis %>% filter(., UL_AVD != "NA" |  
+                                          L_AVD != "NA" |
+                                          H_AVD != "NA" ) %>% 
+  select(., c(Study_ID, UL_concentration, L_concentration, H_concentration,
+              UL_total_obstetric_outcomes, UL_AVD,
+              L_total_obstetric_outcomes, L_AVD,
+              H_total_obstetric_outcomes, H_AVD)) 
+
+AVD_studies <- AVD_studies %>% filter(., Study_ID != 11.1 & Study_ID != 11.2 & Study_ID != 19.1 & Study_ID != 19.2 & Study_ID != 20.1 & Study_ID != 20.2 & Study_ID != 22.1 & Study_ID != 22.2 & Study_ID != 23.1 & Study_ID != 23.2 & Study_ID != 24.1 & Study_ID != 24.2 & Study_ID != 32.1 & Study_ID != 32.2 & Study_ID != 33.1 & Study_ID != 33.2)
+
+
+AVD_studies$UL_AVD <- as.numeric(AVD_studies$UL_AVD)
+AVD_studies$L_AVD <- as.numeric(AVD_studies$L_AVD)
+AVD_studies$H_AVD <- as.numeric(AVD_studies$H_AVD)
+AVD_studies$UL_total_obstetric_outcomes<-as.numeric(AVD_studies$UL_total_obstetric_outcomes)
+AVD_studies$H_total_obstetric_outcomes<-as.numeric(AVD_studies$H_total_obstetric_outcomes)
+AVD_studies$L_total_obstetric_outcomes<-as.numeric(AVD_studies$L_total_obstetric_outcomes)
+AVD_studies$UL_concentration <- as.numeric(AVD_studies$UL_concentration)
+AVD_studies$L_concentration <- as.numeric(AVD_studies$L_concentration)
+AVD_studies$H_concentration <- as.numeric(AVD_studies$H_concentration)
+
+
+#replaces the non NA values with 1, 2, 3 for UL, L, H
+AVD_studies$UL_concentration <- replace(AVD_studies$UL_concentration, AVD_studies$UL_concentration>0, 1)
+AVD_studies$L_concentration <- replace(AVD_studies$L_concentration, AVD_studies$L_concentration>0, 2)
+AVD_studies$H_concentration <- replace(AVD_studies$H_concentration, AVD_studies$H_concentration>0, 3)
+
+View(AVD_studies)
+
+#pivot by concentration
+long_AVD_studies <- AVD_studies %>% 
+  pivot_longer(
+    cols = c(UL_concentration, L_concentration, H_concentration), 
+    names_to = "concentration", 
+    values_to = "concentration_code",
+    values_drop_na = TRUE )
+
+view(long_AVD_studies)
+
+#alter rows so each is only for UL L or H
+
+long_AVD_studies$H_AVD[long_AVD_studies$concentration_code==1 | long_AVD_studies$concentration_code==2]=0
+long_AVD_studies$L_AVD[long_AVD_studies$concentration_code==1 | long_AVD_studies$concentration_code==3]=0
+long_AVD_studies$UL_AVD[long_AVD_studies$concentration_code==3 | long_AVD_studies$concentration_code==2]=0
+long_AVD_studies$avd <- (long_AVD_studies$UL_AVD + long_AVD_studies$L_AVD + long_AVD_studies$H_AVD)
+
+long_AVD_studies$H_total_obstetric_outcomes[long_AVD_studies$concentration_code==1 | long_AVD_studies$concentration_code==2]=0
+long_AVD_studies$L_total_obstetric_outcomes[long_AVD_studies$concentration_code==1 | long_AVD_studies$concentration_code==3]=0
+long_AVD_studies$UL_total_obstetric_outcomes[long_AVD_studies$concentration_code==3 | long_AVD_studies$concentration_code==2]=0
+long_AVD_studies$obs_n <- (long_AVD_studies$UL_total_obstetric_outcomes + long_AVD_studies$L_total_obstetric_outcomes + long_AVD_studies$H_total_obstetric_outcomes)
+
+bayesian_AVD_studies <- long_AVD_studies %>%
+  select(c(Study_ID, concentration, concentration_code, obs_n, avd) )
+
+View(bayesian_AVD_studies)
+
+
+#upload files and check required values are numeric
+meta_analysis <- bayesian_AVD_studies 
+head(meta_analysis) 
+
+meta_analysis$avd <- as.numeric(meta_analysis$avd)
+meta_analysis$obs_n <- as.numeric(meta_analysis$obs_n)
+
+#setting up the network
+
+meta_net <- set_agd_arm(meta_analysis, 
+                        study = Study_ID,
+                        trt = concentration_code,
+                        r = avd, 
+                        n = obs_n,
+                        trt_ref = "1")
+meta_net
+
+plot(meta_net)
+
+#Random effects models
+
+meta_fit_RE <- nma(meta_net, 
+                   trt_effects = "random",
+                   prior_intercept = normal(scale = 100),
+                   prior_trt = normal(scale = 100),
+                   prior_het = half_cauchy(scale = 5),
+                   control=list(adapt_delta=0.99, stepsize=0.8),
+                   iter=8000, chains = 8)
+meta_fit_RE
+
+pairs(meta_fit_RE, pars = c("mu[4]", "tau"))
+
+pred_RE_studies <- predict(meta_fit_RE, type = "response")
+pH_arm_pred_RE_studies
+
+plot(pred_RE_studies)
+
+meta_fit_RE <- relative_effects(meta_fit_RE, trt_ref = '1')
+
+meta_fit_RE
+
+plot(meta_fit_RE, ref_line=0) 
